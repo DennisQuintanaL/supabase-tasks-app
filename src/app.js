@@ -2,7 +2,10 @@ import {
   registrarUsuario,
   iniciarSesion,
   cerrarSesion,
-  obtenerUsuarioActual
+  obtenerUsuarioActual,
+  obtenerPerfil,
+  cambiarPassword,
+  obtenerOtrosUsuarios
 } from './services/authService.js'
 
 import {
@@ -10,6 +13,7 @@ import {
   crearTarea,
   cambiarEstado,
   eliminarTarea,
+  compartirTarea,
   buscarTareaPorId,
   modificarTareaPorId,
   eliminarTareaPorId,
@@ -29,487 +33,199 @@ import {
   mostrarTareas,
   mostrarCargandoTareas,
   limpiarFormularioTarea,
-  mostrarResultadoRls
+  mostrarResultadoRls,
+  mostrarMensajePassword
 } from './views/tasksView.js'
 
-import {
-  mostrarConfirmacion
-} from './components/confirmModal.js'
-
+import { mostrarConfirmacion } from './components/confirmModal.js'
 
 let usuarioActual = null
+let perfilUsuario = null
+let otrosUsuarios = []
 let canalRealtime = null
 
-
 export async function iniciarApp() {
-  const {
-    user,
-    error
-  } = await obtenerUsuarioActual()
+  const { user, error } = await obtenerUsuarioActual()
 
-
-  if (error) {
-    console.error(
-      'Error al recuperar sesión:',
-      error
-    )
-
+  if (error || !user) {
     mostrarPantallaLogin()
-
     return
   }
 
-
-  if (user) {
-    await mostrarPantallaTareas(user)
-  } else {
-    mostrarPantallaLogin()
-  }
+  await mostrarPantallaTareas(user)
 }
 
-
-function mostrarPantallaLogin(
-  mensaje = ''
-) {
+function mostrarPantallaLogin(mensaje = '') {
   usuarioActual = null
-
-
-  mostrarLoginView({
-    mensaje
-  })
-
-
+  mostrarLoginView({ mensaje })
   configurarLoginView({
     onLogin: manejarLogin,
     onRegistro: manejarRegistro
   })
 }
 
-
-async function mostrarPantallaTareas(
-  user
-) {
+async function mostrarPantallaTareas(user) {
   usuarioActual = user
+  perfilUsuario = await obtenerPerfil(user.id)
+  otrosUsuarios = await obtenerOtrosUsuarios(user.id)
 
-
-  mostrarTasksView(user)
-
+  mostrarTasksView(user, perfilUsuario)
 
   configurarTasksView({
     onCrear: manejarCrearTarea,
     onLogout: manejarLogout,
-    onBuscarPorId:
-      manejarBuscarTareaPorId,
-    onModificarPorId:
-      manejarModificarTareaPorId,
-    onEliminarPorId:
-      solicitarEliminarTareaPorId
+    onCambiarPassword: manejarCambiarPassword,
+    onBuscarPorId: manejarBuscarTareaPorId,
+    onModificarPorId: manejarModificarTareaPorId,
+    onEliminarPorId: solicitarEliminarTareaPorId
   })
 
-
   await cargarTareas()
-
   await activarRealtime()
 }
 
-
 // ==========================================
-// AUTH
+// AUTENTICACIÓN Y PERFIL
 // ==========================================
 
-async function manejarLogin({
-  email,
-  password
-}) {
-  if (!email || !password) {
-    mostrarMensajeLogin(
-      'Ingresa correo y contraseña.'
-    )
-
-    return
-  }
-
-
-  const {
-    data,
-    error
-  } = await iniciarSesion(
-    email,
-    password
-  )
-
-
-  if (error) {
-    mostrarMensajeLogin(
-      'Error: ' + error.message
-    )
-
-    return
-  }
-
-
-  if (data.user) {
-    await mostrarPantallaTareas(
-      data.user
-    )
-  }
+async function manejarLogin({ email, password }) {
+  if (!email || !password) return mostrarMensajeLogin('Ingresa correo y contraseña.')
+  const { data, error } = await iniciarSesion(email, password)
+  if (error) return mostrarMensajeLogin('Error: ' + error.message)
+  if (data.user) await mostrarPantallaTareas(data.user)
 }
 
-
-async function manejarRegistro({
-  email,
-  password
-}) {
-  if (!email || !password) {
-    mostrarMensajeLogin(
-      'Ingresa correo y contraseña.'
-    )
-
-    return
-  }
-
-
-  const {
-    data,
-    error
-  } = await registrarUsuario(
-    email,
-    password
-  )
-
-
-  if (error) {
-    mostrarMensajeLogin(
-      'Error: ' + error.message
-    )
-
-    return
-  }
-
+async function manejarRegistro({ email, password }) {
+  if (!email || !password) return mostrarMensajeLogin('Ingresa correo y contraseña.')
+  const { data, error } = await registrarUsuario(email, password)
+  if (error) return mostrarMensajeLogin('Error: ' + error.message)
 
   if (data.session && data.user) {
-    await mostrarPantallaTareas(
-      data.user
-    )
-
+    await mostrarPantallaTareas(data.user)
     return
   }
-
-
-  mostrarMensajeLogin(
-    'Usuario registrado. Revisa tu correo si se requiere confirmación.'
-  )
+  mostrarMensajeLogin('Usuario registrado. Revisa tu correo si requiere confirmación.')
 }
-
 
 async function manejarLogout() {
   await detenerRealtime()
-
-
-  const {
-    error
-  } = await cerrarSesion()
-
-
-  if (error) {
-    console.error(
-      'Error al cerrar sesión:',
-      error
-    )
-
-    return
-  }
-
-
-  mostrarPantallaLogin(
-    'Sesión cerrada correctamente.'
-  )
+  await cerrarSesion()
+  mostrarPantallaLogin('Sesión cerrada correctamente.')
 }
 
+async function manejarCambiarPassword(nuevaPassword) {
+  const { error } = await cambiarPassword(nuevaPassword)
+  if (error) {
+    mostrarMensajePassword('Error: ' + error.message, true)
+  } else {
+    mostrarMensajePassword('Contraseña actualizada correctamente.')
+  }
+}
 
 // ==========================================
-// CRUD NORMAL
+// CRUD TAREAS Y COMPARTICIÓN
 // ==========================================
 
 async function cargarTareas() {
   mostrarCargandoTareas()
-
-
-  const {
-    data,
-    error
-  } = await obtenerTareas()
-
+  const { data, error } = await obtenerTareas()
 
   if (error) {
-    console.error(
-      'Error al obtener tareas:',
-      error
-    )
-
+    console.error('Error al obtener tareas:', error)
     return
   }
-
 
   mostrarTareas({
     tareas: data,
-
-    onCambiarEstado:
-      manejarCambioEstado,
-
-    onEliminar:
-      solicitarEliminarTarea
+    currentUserId: usuarioActual.id,
+    otrosUsuarios,
+    onCambiarEstado: manejarCambioEstado,
+    onEliminar: solicitarEliminarTarea,
+    onCompartir: manejarCompartirTarea
   })
 }
 
-
-async function manejarCrearTarea({
-  title,
-  description,
-  priority
-}) {
-  if (!usuarioActual) {
-    return
-  }
-
-
-  const {
-    error
-  } = await crearTarea({
-    title,
-    description,
-    priority,
-    userId: usuarioActual.id
-  })
-
-
-  if (error) {
-    console.error(
-      'Error al crear tarea:',
-      error
-    )
-
-    return
-  }
-
-
+async function manejarCrearTarea({ title, description, priority }) {
+  if (!usuarioActual) return
+  const { error } = await crearTarea({ title, description, priority, userId: usuarioActual.id })
+  if (error) return console.error('Error al crear tarea:', error)
   limpiarFormularioTarea()
-
-  // Realtime actualiza la lista.
 }
 
-
-async function manejarCambioEstado({
-  id,
-  estadoActual
-}) {
-  if (!usuarioActual) {
-    return
-  }
-
-
-  const {
-    error
-  } = await cambiarEstado(
-    id,
-    estadoActual
-  )
-
-
-  if (error) {
-    console.error(
-      'Error al cambiar estado:',
-      error
-    )
-  }
+async function manejarCambioEstado({ id, estadoActual }) {
+  if (!usuarioActual) return
+  const { error } = await cambiarEstado(id, estadoActual)
+  if (error) console.error('Error al cambiar estado:', error)
 }
-
 
 function solicitarEliminarTarea(id) {
   mostrarConfirmacion({
     titulo: 'Eliminar tarea',
-
-    mensaje:
-      '¿Seguro que deseas eliminar esta tarea?',
-
-    textoConfirmar:
-      'Eliminar',
-
-    onConfirmar:
-      async () => {
-
-        const {
-          error
-        } = await eliminarTarea(id)
-
-
-        if (error) {
-          console.error(
-            'Error al eliminar tarea:',
-            error
-          )
-        }
-      }
+    mensaje: '¿Seguro que deseas eliminar esta tarea?',
+    textoConfirmar: 'Eliminar',
+    onConfirmar: async () => {
+      const { error } = await eliminarTarea(id)
+      if (error) console.error('Error al eliminar tarea:', error)
+    }
   })
 }
 
+async function manejarCompartirTarea(taskId, targetUserId) {
+  const { error } = await compartirTarea(taskId, targetUserId)
+  if (error) {
+    alert('Error al compartir tarea: ' + error.message)
+  } else {
+    alert('Tarea compartida con éxito')
+  }
+}
 
 // ==========================================
-// PRUEBAS EDUCATIVAS DE RLS
+// PRUEBAS EDUCATIVAS DE RLS POR ID
 // ==========================================
 
 async function manejarBuscarTareaPorId(id) {
+  mostrarResultadoRls(`Buscando tarea con ID ${id}...`)
+  const { data, error } = await buscarTareaPorId(id)
 
-  mostrarResultadoRls(
-    `Buscando tarea con ID ${id}...`
-  )
-
-
-  const {
-    data,
-    error
-  } = await buscarTareaPorId(id)
-
-
-  if (error) {
-
-    mostrarResultadoRls(
-      'Error: ' + error.message,
-      'error'
-    )
-
-    return
-  }
-
-
+  if (error) return mostrarResultadoRls('Error: ' + error.message, 'error')
   if (!data || data.length === 0) {
-
-    mostrarResultadoRls(
-      `No se encontró la tarea ${id} o no tienes permiso para verla.`,
-      'blocked'
-    )
-
-    return
+    return mostrarResultadoRls(`No se encontró la tarea ${id} o RLS bloqueó la consulta.`, 'blocked')
   }
-
 
   const tarea = data[0]
-
-
-  mostrarResultadoRls(
-    `Acceso permitido. ID: ${tarea.id} | Título: ${tarea.title} | Prioridad: ${tarea.priority}`,
-    'success'
-  )
+  mostrarResultadoRls(`Acceso permitido por RLS. ID: ${tarea.id} | Título: ${tarea.title} | Prioridad: ${tarea.priority}`, 'success')
 }
 
+async function manejarModificarTareaPorId(id, nuevoTitulo) {
+  mostrarResultadoRls(`Intentando modificar la tarea ${id}...`)
+  const { data, error } = await modificarTareaPorId(id, nuevoTitulo)
 
-async function manejarModificarTareaPorId(
-  id,
-  nuevoTitulo
-) {
-
-  mostrarResultadoRls(
-    `Intentando modificar la tarea ${id}...`
-  )
-
-
-  const {
-    data,
-    error
-  } = await modificarTareaPorId(
-    id,
-    nuevoTitulo
-  )
-
-
-  if (error) {
-
-    mostrarResultadoRls(
-      'Error: ' + error.message,
-      'error'
-    )
-
-    return
-  }
-
-
+  if (error) return mostrarResultadoRls('Error: ' + error.message, 'error')
   if (!data || data.length === 0) {
-
-    mostrarResultadoRls(
-      `La tarea ${id} no existe o RLS impidió modificarla.`,
-      'blocked'
-    )
-
-    return
+    return mostrarResultadoRls(`La tarea ${id} no existe o RLS impidió modificarla.`, 'blocked')
   }
 
-
-  mostrarResultadoRls(
-    `Tarea ${id} modificada correctamente.`,
-    'success'
-  )
+  mostrarResultadoRls(`Tarea ${id} modificada correctamente por RLS.`, 'success')
 }
-
 
 function solicitarEliminarTareaPorId(id) {
-
   mostrarConfirmacion({
-    titulo:
-      'Prueba de eliminación RLS',
+    titulo: 'Prueba de eliminación RLS',
+    mensaje: `Se intentará eliminar directamente la tarea con ID ${id}.`,
+    textoConfirmar: 'Intentar eliminar',
+    onConfirmar: async () => {
+      mostrarResultadoRls(`Intentando eliminar la tarea ${id}...`)
+      const { data, error } = await eliminarTareaPorId(id)
 
-    mensaje:
-      `Se intentará eliminar directamente la tarea con ID ${id}.`,
-
-    textoConfirmar:
-      'Intentar eliminar',
-
-    onConfirmar:
-      async () => {
-
-        mostrarResultadoRls(
-          `Intentando eliminar la tarea ${id}...`
-        )
-
-
-        const {
-          data,
-          error
-        } = await eliminarTareaPorId(id)
-
-
-        if (error) {
-
-          mostrarResultadoRls(
-            'Error: ' + error.message,
-            'error'
-          )
-
-          return
-        }
-
-
-        if (
-          !data ||
-          data.length === 0
-        ) {
-
-          mostrarResultadoRls(
-            `La tarea ${id} no existe o RLS impidió eliminarla.`,
-            'blocked'
-          )
-
-          return
-        }
-
-
-        mostrarResultadoRls(
-          `Tarea ${id} eliminada correctamente.`,
-          'success'
-        )
+      if (error) return mostrarResultadoRls('Error: ' + error.message, 'error')
+      if (!data || data.length === 0) {
+        return mostrarResultadoRls(`La tarea ${id} no existe o RLS impidió eliminarla.`, 'blocked')
       }
+
+      mostrarResultadoRls(`Tarea ${id} eliminada correctamente.`, 'success')
+    }
   })
 }
-
 
 // ==========================================
 // REALTIME
@@ -517,26 +233,13 @@ function solicitarEliminarTareaPorId(id) {
 
 async function activarRealtime() {
   await detenerRealtime()
-
-
-  canalRealtime =
-    suscribirseATareas(
-      async () => {
-        await cargarTareas()
-      }
-    )
+  canalRealtime = suscribirseATareas(async () => {
+    await cargarTareas()
+  })
 }
 
-
 async function detenerRealtime() {
-  if (!canalRealtime) {
-    return
-  }
-
-
-  await cancelarSuscripcion(
-    canalRealtime
-  )
-
+  if (!canalRealtime) return
+  await cancelarSuscripcion(canalRealtime)
   canalRealtime = null
 }
